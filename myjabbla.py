@@ -12,9 +12,10 @@ class User:
         self.id = info["id"]
         self.login = info["login"]
         self.isadmin = info["admin"]
+        self.group_id = info["group_id"]
         
     def __str__(self):
-        return f"<User id:{self.id}, login:{self.login}, admin:{self.isadmin}>"
+        return f"<User id:{self.id}, login:{self.login}, admin:{self.isadmin}, group_id:{self.group_id}>"
     
     def update_password(self, password: str) -> bool:
         if self.id is None or self.id < 1:
@@ -35,6 +36,10 @@ class User:
         payload = {}
         info = self.myjabbla.do_del_request(url)
         return not info["error"]
+    
+    def get_group(self) -> 'Group':
+        return self.myjabbla.get_group(self.group_id)
+
         
 class Group:
     def __init__(self, mj, info):
@@ -98,22 +103,29 @@ class Group:
         
         return Group(self.myjabbla, info["weblockgroup"])
         
-class MyJabbla:
-    def __init__(self) -> None:
-        self.baseUrl = "https://api.jabbla.com/v1/"
+class Server:
+    def __init__(self, base_url: str = None) -> None:
+        self.baseUrl = base_url or "https://api.jabbla.com/v1/"
         self.session = requests.Session()
         self.loggedIn = False
         self.top_group = -1
+        self.api_key = None
         
     def __del__(self):
         if self.loggedIn:
             self.logout()
     
+    def _construct_headers(self):
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        if self.api_key is not None:
+            headers['Authorization'] = f"apikey {self.api_key}"
+        return headers
+    
     def do_post_request(self, url, payload ):
         theUrl = self.baseUrl + url
-        headers = {
-        'Content-Type': 'application/json'
-        }
+        headers = self._construct_headers()
 
         response = self.session.request("POST", theUrl, headers=headers, data=json.dumps(payload))
         info = json.loads(response.content)
@@ -121,9 +133,7 @@ class MyJabbla:
     
     def do_put_request(self, url, payload ):
         theUrl = self.baseUrl + url
-        headers = {
-        'Content-Type': 'application/json'
-        }
+        headers = self._construct_headers()
 
         response = self.session.request("PUT", theUrl, headers=headers, data=json.dumps(payload))
         info = json.loads(response.content)
@@ -131,9 +141,7 @@ class MyJabbla:
 
     def do_get_request(self, url):
         theUrl = self.baseUrl + url
-        headers = {
-        'Content-Type': 'application/json'
-        }
+        headers = self._construct_headers()
 
         response = self.session.request("GET", theUrl, headers=headers)
         info = json.loads(response.content)
@@ -141,13 +149,14 @@ class MyJabbla:
     
     def do_del_request(self, url):
         theUrl = self.baseUrl + url
-        headers = {
-        'Content-Type': 'application/json'
-        }
+        headers = self._construct_headers()
 
         response = self.session.request("DELETE", theUrl, headers=headers)
         info = json.loads(response.content)
         return info
+        
+    def set_api_key(self, api_key: str):
+        self.api_key = api_key
         
     def login(self, username: str, password: str) -> bool:
         url = "login"
@@ -155,7 +164,9 @@ class MyJabbla:
         payload = { "login": username, "password": password}
         info = self.do_post_request(url, payload)
         if not info["error"]:
-            self.top_group = info["obj"]["group_id"]
+            if "obj" in info and "group_id" in info["obj"]:
+                self.top_group = info["obj"]["group_id"]
+            
             print(f"Toplevel group for {username} is {self.top_group}")
             return True
 
@@ -172,6 +183,33 @@ class MyJabbla:
     def toplevelgroup(self) -> Group:
         url = f"weblockgroup/{self.top_group}"
         info = self.do_get_request(url)
+        
+        return Group(self, info["data"])
+    
+    def get_user(self, login: str) -> User:
+        url = f"weblockaccount/login/{login}"
+        info = self.do_get_request(url)
+        if info["error"]:
+            raise( ApiError(info["errormsg"]))
+        
+        return User(self, info["data"])
+    
+    def get_group(self, group_id: int) -> Group:
+        url = f"weblockgroup/{group_id}"
+        info = self.do_get_request(url)
+        if info["error"]:
+            raise( ApiError(info["errormsg"]))
+        
+        return Group(self, info["data"])
+    
+    def get_group_sn(self, sn: str) -> Group:
+        url = f"weblockgroup/{sn}/license"
+        info = self.do_get_request(url)
+        if info["error"]:
+            raise( ApiError(info["errormsg"]))
+        
+        if "data" not in info or info["data"] is None:
+            raise( ApiError(f"No group for serial number {sn}"))
         
         return Group(self, info["data"])
     

@@ -1,7 +1,7 @@
 import myjabbla
 
 def main():
-    mj = myjabbla.MyJabbla()
+    mj = myjabbla.Server("https://my.uat.jabbla.com/api/v1/")
 
     print(
 '''                                       
@@ -22,6 +22,7 @@ def main():
     password = input("Password? ")
     if( mj.login(login, password)):
         print("Login okay")
+        
         myGroup = mj.toplevelgroup()
         print(f"Toplevel group: {myGroup}")
         
