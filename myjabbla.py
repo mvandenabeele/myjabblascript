@@ -6,13 +6,23 @@ class ApiError(Exception):
     def __init__(self, msg):
         self.message = msg
         
+class ItemNotFoundError(ApiError):
+    def __init__(self, msg):
+        super().__init__(msg)
+        
 class User:
     def __init__(self, mj, info):
         self.myjabbla = mj
         self.id = info["id"]
         self.login = info["login"]
         self.isadmin = info["admin"]
-        self.group_id = info["group_id"]
+        self.packet_sn = info["packet_sn"]
+        if "group_id" in info:
+            self.group_id = info["group_id"]
+        elif "group" in info and "id" in info["group"]:
+            self.group_id = info["group"]["id"]
+        else:
+            self.group_id = None    
         
     def __str__(self):
         return f"<User id:{self.id}, login:{self.login}, admin:{self.isadmin}, group_id:{self.group_id}>"
@@ -145,6 +155,14 @@ class Server:
 
         response = self.session.request("GET", theUrl, headers=headers)
         info = json.loads(response.content)
+        
+        if response.status_code == 404:
+            msg = "Item not found"
+            if "errormsg" in info:
+                msg = info["errormsg"]
+            raise( ItemNotFoundError(msg))
+
+        
         return info
     
     def do_del_request(self, url):
