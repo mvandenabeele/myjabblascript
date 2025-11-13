@@ -50,11 +50,26 @@ def load_lines_from_xlsx(file_path):
     wb = load_workbook(filename=file_path)
     sheet = wb.active
     
+    max_line_width = 0
     lines = []
     for i, row in enumerate(sheet.iter_rows(values_only=True)):
-        lines.append(row)
+        line_width = 0
+        for w, cell in enumerate(row):
+            if cell is not None:
+                line_width = w
+                
+        if line_width > max_line_width:
+            max_line_width = line_width
+                    
+        has_data = line_width > 0
+
+        if has_data:
+            lines.append(row)
     
-    return lines
+    clean_lines = []
+    for row in lines:
+        clean_lines.append( row[:max_line_width+1] )
+    return clean_lines
 
 def load_lines_from_csv(file_path):
     import csv
@@ -95,13 +110,13 @@ def process_xlsx(file_path, target_group: myjabbla.Group, server: myjabbla.Serve
 
     login_col = int(input("Enter column number for login: "))
     pwd_col = int(input("Enter column number for password: "))
-    email_col = int(input("Enter column number for email: "))   
+    email_col = int(input("Enter column number for email (or -1 if none): "))   
     
     # Collect all user data first
     user_data = []
     for i, row in enumerate(data_lines):
         if row[login_col] and row[pwd_col] and row[email_col]:  # Skip empty rows
-            user_data.append((i+start_line, row[login_col], row[pwd_col], row[email_col]))
+            user_data.append((i+start_line, row[login_col], row[pwd_col], row[email_col] if email_col >= 0 else ""))
     
     print(f"Found {len(user_data)} users to process")
     
