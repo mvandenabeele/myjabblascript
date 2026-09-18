@@ -1,5 +1,7 @@
 import os
 import re
+import csv
+import secrets
 import myjabbla
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -46,6 +48,21 @@ def create_user_account(target_group, login, password, name,email, row_index):
     except myjabbla.ApiError as e:
         return row_index, None, e
 
+# no confusable characters: 0/O/o, 1/l/I/i
+PASSWORD_ALPHABETS = (
+    "abcdefghjkmnpqrstuvwxyz",
+    "ABCDEFGHJKLMNPQRSTUVWXYZ",
+    "23456789",
+)
+
+def generate_password(length=8):
+    """Random password with at least one lowercase letter, uppercase letter and digit"""
+    alphabet = "".join(PASSWORD_ALPHABETS)
+    while True:
+        password = "".join(secrets.choice(alphabet) for _ in range(length))
+        if all(any(c in chars for c in password) for chars in PASSWORD_ALPHABETS):
+            return password
+
 def load_lines_from_xlsx(file_path):
     from openpyxl import load_workbook
     wb = load_workbook(filename=file_path)
@@ -53,6 +70,7 @@ def load_lines_from_xlsx(file_path):
     
     max_line_width = 0
     lines = []
+    sheet_rows = []  # sheet row number (1-based) of each returned line
     for i, row in enumerate(sheet.iter_rows(values_only=True)):
         line_width = 0
         for w, cell in enumerate(row):
@@ -66,11 +84,12 @@ def load_lines_from_xlsx(file_path):
 
         if has_data:
             lines.append(row)
+            sheet_rows.append(i+1)
     
     clean_lines = []
     for row in lines:
         clean_lines.append( row[:max_line_width+1] )
-    return clean_lines
+    return clean_lines, sheet_rows
 
 def load_lines_from_csv(file_path):
     import csv
@@ -82,10 +101,60 @@ def load_lines_from_csv(file_path):
             lines.append(row)
     return lines
 
+def save_passwords_to_xlsx(file_path, passwords, header_row=None):
+    """Write passwords ({sheet row: password}) to the first empty column of the active sheet"""
+    from openpyxl import load_workbook
+    wb = load_workbook(filename=file_path)
+    sheet = wb.active
+
+    col = 1
+    while any(sheet.cell(row=r, column=col).value is not None for r in range(1, sheet.max_row+1)):
+        col += 1
+
+    if header_row is not None:
+        sheet.cell(row=header_row, column=col, value="password")
+    for row, password in passwords.items():
+        sheet.cell(row=row, column=col, value=password)
+
+    while True:
+        try:
+            wb.save(file_path)
+            break
+        except PermissionError:
+            input(f"Cannot write {file_path}, is it open in Excel? Close it and press Enter to retry...")
+    print(f"Generated passwords written to column {sheet.cell(row=1, column=col).column_letter} of {file_path}")
+
+def save_passwords_to_csv(file_path, passwords, header_row=None):
+    """Write passwords ({line index: password}) to the first empty column of the csv file"""
+    lines = [list(row) for row in load_lines_from_csv(file_path)]
+
+    col = 0
+    while any(len(row) > col and row[col] != "" for row in lines):
+        col += 1
+
+    def set_cell(row, value):
+        lines[row].extend([""] * (col + 1 - len(lines[row])))
+        lines[row][col] = value
+
+    if header_row is not None:
+        set_cell(header_row, "password")
+    for row, password in passwords.items():
+        set_cell(row, password)
+
+    while True:
+        try:
+            with open(file_path, "w", newline="") as csvfile:
+                csv.writer(csvfile).writerows(lines)
+            break
+        except PermissionError:
+            input(f"Cannot write {file_path}, is it open in Excel? Close it and press Enter to retry...")
+    print(f"Generated passwords written to column {col} of {file_path}")
+
 def process_xlsx(file_path, target_group: myjabbla.Group, server: myjabbla.Server, max_workers=10):
     
+    sheet_rows = None
     if file_path.endswith(".xlsx"):
-        data_lines = load_lines_from_xlsx(file_path)
+        data_lines, sheet_rows = load_lines_from_xlsx(file_path)
     else:
         data_lines = load_lines_from_csv(file_path)
 
@@ -110,15 +179,16 @@ def process_xlsx(file_path, target_group: myjabbla.Group, server: myjabbla.Serve
             print(j, c)
 
     login_col = int(input("Enter column number for login: "))
-    pwd_col = int(input("Enter column number for password: "))
+    pwd_col = int(input("Enter column number for password (or -1 to generate passwords): "))
     name_col = int(input("Enter column number for name (or -1 if none): "))   
     email_col = int(input("Enter column number for email (or -1 if none): "))   
     
     # Collect all user data first
     user_data = []
     for i, row in enumerate(data_lines):
-        if row[login_col] and row[pwd_col] and row[email_col]:  # Skip empty rows
-            user_data.append((i+start_line, row[login_col], row[pwd_col], row[name_col] if name_col >= 0 else "", row[email_col] if email_col >= 0 else ""))
+        if row[login_col] and (pwd_col < 0 or row[pwd_col]) and (email_col < 0 or row[email_col]):  # Skip empty rows
+            password = row[pwd_col] if pwd_col >= 0 else generate_password()
+            user_data.append((i+start_line, row[login_col], password, row[name_col] if name_col >= 0 else "", row[email_col] if email_col >= 0 else ""))
     
     print(f"Found {len(user_data)} users to process")
     
@@ -205,6 +275,18 @@ def process_xlsx(file_path, target_group: myjabbla.Group, server: myjabbla.Serve
         print(f"Errors creating {len(creation_errors)} users:")
         for row_index, login, error_msg in creation_errors:
             print(f" - Row {row_index}, login {login}: {error_msg}")
+
+    if pwd_col < 0 and created_users:
+        created_rows = {row_index for row_index, _ in created_users}
+        passwords = {row_index: password
+                     for row_index, _, password, _, _ in user_data if row_index in created_rows}
+        header_row = start_line-1 if start_line > 0 else None
+        if sheet_rows is not None:
+            passwords = {sheet_rows[row_index]: password for row_index, password in passwords.items()}
+            header_row = sheet_rows[header_row] if header_row is not None else None
+            save_passwords_to_xlsx(file_path, passwords, header_row)
+        else:
+            save_passwords_to_csv(file_path, passwords, header_row)
               
 def main():
     load_dotenv()
