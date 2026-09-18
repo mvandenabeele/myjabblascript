@@ -1,4 +1,5 @@
 import os
+import re
 import myjabbla
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -37,10 +38,10 @@ def check_user_exists(server, login, row_index):
     except myjabbla.ApiError as e:
         return row_index, None, e
 
-def create_user_account(target_group, login, password, email, row_index):
+def create_user_account(target_group, login, password, name,email, row_index):
     """Helper function to create a user account (for multithreading)"""
     try:
-        added_user = target_group.add_user(login, password, email)
+        added_user = target_group.add_user(login, password, name, email)
         return row_index, added_user, None
     except myjabbla.ApiError as e:
         return row_index, None, e
@@ -110,13 +111,14 @@ def process_xlsx(file_path, target_group: myjabbla.Group, server: myjabbla.Serve
 
     login_col = int(input("Enter column number for login: "))
     pwd_col = int(input("Enter column number for password: "))
+    name_col = int(input("Enter column number for name (or -1 if none): "))   
     email_col = int(input("Enter column number for email (or -1 if none): "))   
     
     # Collect all user data first
     user_data = []
     for i, row in enumerate(data_lines):
         if row[login_col] and row[pwd_col] and row[email_col]:  # Skip empty rows
-            user_data.append((i+start_line, row[login_col], row[pwd_col], row[email_col] if email_col >= 0 else ""))
+            user_data.append((i+start_line, row[login_col], row[pwd_col], row[name_col] if name_col >= 0 else "", row[email_col] if email_col >= 0 else ""))
     
     print(f"Found {len(user_data)} users to process")
     
@@ -130,7 +132,7 @@ def process_xlsx(file_path, target_group: myjabbla.Group, server: myjabbla.Serve
         # Submit all check tasks
         future_to_data = {
             executor.submit(check_user_exists, server, login, row_index): (row_index, login)
-            for row_index, login, _, _ in user_data
+            for row_index, login, _, _, _ in user_data
         }
         
         completed = 0
@@ -175,9 +177,9 @@ def process_xlsx(file_path, target_group: myjabbla.Group, server: myjabbla.Serve
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all creation tasks
         future_to_data = {
-            executor.submit(create_user_account, target_group, login, password, email, row_index): 
-            (row_index, login, password, email)
-            for row_index, login, password, email in user_data
+            executor.submit(create_user_account, target_group, login, password, name, email, row_index): 
+            (row_index, login, name, password, email)
+            for row_index, login, password, name,email in user_data
         }
         
         completed = 0
@@ -236,7 +238,10 @@ def main():
         elif file.endswith(".xlsx"):
             print(f"Found xlsx file: {file}")
             file_candidates.append(file)
-            
+
+    # newest files first
+    file_candidates.sort(key=os.path.getmtime, reverse=True)
+
     for idx, fname in enumerate(file_candidates):
         print(f"{idx}: {fname}")
     file = None
@@ -255,7 +260,13 @@ def main():
     if file:
         print(f"Processing file: {file}")
         
-    packet = input("What serial number should accounts be added to? ")
+    # suggest a serial number (ME/SPR followed by digits) found in the filename
+    match = re.search(r"(?<![A-Za-z])(ME|SPR)\d+", file, re.IGNORECASE)
+    suggested = match.group(0).upper() if match else None
+    if suggested:
+        packet = input(f"What serial number should accounts be added to? [{suggested}] ").strip() or suggested
+    else:
+        packet = input("What serial number should accounts be added to? ").strip()
     try:
         target_group = mj.get_group_sn(packet)
         target_group = select_subgroup(target_group) or target_group

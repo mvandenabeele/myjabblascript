@@ -85,7 +85,7 @@ class Group:
         info = self.myjabbla.do_del_request(url)
         return not info["error"]
     
-    def add_user(self, login: str, password: str, name: str) -> User:
+    def add_user(self, login: str, password: str, name: str, email: str) -> User:
         url = f"weblockgroup/{self.id}/adduser"
         
         payload = {}
@@ -93,6 +93,7 @@ class Group:
         payload["user"]["login"] = login
         payload["user"]["password"] = password
         payload["user"]["name"] = name
+        payload["user"]["email"] = email
         
         info = self.myjabbla.do_put_request(url, payload)
         if info["error"]:
